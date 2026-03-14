@@ -1,0 +1,137 @@
+name: "pxdiff Storybook Visual Regression"
+description: "One-liner Storybook visual regression testing with pxdiff"
+branding:
+  icon: "eye"
+  color: "purple"
+
+inputs:
+  api-key:
+    description: "pxdiff API key"
+    required: true
+  source:
+    description: "Path to Storybook build directory"
+    required: true
+  suite:
+    description: "Suite name"
+    required: false
+    default: "default"
+  auto-baseline:
+    description: "Auto-accept baselines (skip diff)"
+    required: false
+    default: "false"
+  threshold:
+    description: "Diff threshold (0.0-1.0)"
+    required: false
+  filter:
+    description: "Glob pattern to filter stories"
+    required: false
+  api-url:
+    description: "pxdiff API URL"
+    required: false
+    default: "https://pxdiff.com"
+  cli-version:
+    description: "CLI version range to install (default set at publish time)"
+    required: false
+    default: "~0.0.16"
+
+outputs:
+  diff-url:
+    description: "URL to the diff review page"
+    value: ${{ steps.result.outputs.diff-url }}
+  status:
+    description: "Result status (passed/failed)"
+    value: ${{ steps.result.outputs.status }}
+  changed:
+    description: "Number of changed snapshots"
+    value: ${{ steps.result.outputs.changed }}
+  new:
+    description: "Number of new snapshots"
+    value: ${{ steps.result.outputs.new }}
+  capture-id:
+    description: "Capture ID"
+    value: ${{ steps.result.outputs.capture-id }}
+  diff-id:
+    description: "Diff ID"
+    value: ${{ steps.result.outputs.diff-id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install pxdiff CLI
+      shell: bash
+      run: npm install -g @pxdiff/cli@${{ inputs.cli-version }}
+
+    - name: Run pxdiff storybook
+      id: capture
+      shell: bash
+      env:
+        PXDIFF_API_KEY: ${{ inputs.api-key }}
+        PXDIFF_API_URL: ${{ inputs.api-url }}
+      run: |
+        set -euo pipefail
+
+        STORYBOOK_ARGS="${{ inputs.source }} --suite ${{ inputs.suite }} --output json"
+
+        if [ "${{ inputs.auto-baseline }}" = "true" ]; then
+          STORYBOOK_ARGS="$STORYBOOK_ARGS --auto-approve"
+        fi
+
+        if [ -n "${{ inputs.filter }}" ]; then
+          STORYBOOK_ARGS="$STORYBOOK_ARGS --filter ${{ inputs.filter }}"
+        fi
+
+        CAPTURE_JSON=$(pxdiff storybook $STORYBOOK_ARGS)
+        echo "capture-json=$CAPTURE_JSON" >> "$GITHUB_OUTPUT"
+
+    - name: Run pxdiff diff
+      id: result
+      shell: bash
+      if: inputs.auto-baseline != 'true'
+      env:
+        PXDIFF_API_KEY: ${{ inputs.api-key }}
+        PXDIFF_API_URL: ${{ inputs.api-url }}
+      run: |
+        set -uo pipefail
+
+        CAPTURE_JSON='${{ steps.capture.outputs.capture-json }}'
+        CAPTURE_ID=$(echo "$CAPTURE_JSON" | jq -r '.captureId')
+        echo "capture-id=$CAPTURE_ID" >> "$GITHUB_OUTPUT"
+
+        DIFF_ARGS="--suite ${{ inputs.suite }} --head-capture $CAPTURE_ID --output json"
+
+        if [ -n "${{ inputs.threshold }}" ]; then
+          DIFF_ARGS="$DIFF_ARGS --threshold ${{ inputs.threshold }}"
+        fi
+
+        DIFF_EXIT=0
+        DIFF_JSON=$(pxdiff diff $DIFF_ARGS) || DIFF_EXIT=$?
+
+        DIFF_ID=$(echo "$DIFF_JSON" | jq -r '.diffId')
+        CHANGED=$(echo "$DIFF_JSON" | jq -r '.summary.changed')
+        NEW=$(echo "$DIFF_JSON" | jq -r '.summary.new')
+        REVIEW_URL=$(echo "$DIFF_JSON" | jq -r '.reviewUrl // empty')
+
+        echo "diff-id=$DIFF_ID" >> "$GITHUB_OUTPUT"
+        echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+        echo "new=$NEW" >> "$GITHUB_OUTPUT"
+        echo "diff-url=$REVIEW_URL" >> "$GITHUB_OUTPUT"
+
+        if [ "$DIFF_EXIT" -eq 1 ]; then
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "::error::Visual changes detected: $CHANGED changed, $NEW new. Review at $REVIEW_URL"
+          exit 1
+        else
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Set outputs for auto-baseline
+      id: baseline-result
+      shell: bash
+      if: inputs.auto-baseline == 'true'
+      run: |
+        CAPTURE_JSON='${{ steps.capture.outputs.capture-json }}'
+        CAPTURE_ID=$(echo "$CAPTURE_JSON" | jq -r '.captureId')
+        echo "capture-id=$CAPTURE_ID" >> "$GITHUB_OUTPUT"
+        echo "status=passed" >> "$GITHUB_OUTPUT"
+        echo "changed=0" >> "$GITHUB_OUTPUT"
+        echo "new=0" >> "$GITHUB_OUTPUT"
