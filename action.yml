@@ -8,7 +8,7 @@ inputs:
   api-key:
     description: "pxdiff API key"
     required: true
-  source:
+  build-dir:
     description: "Path to Storybook build directory"
     required: true
   suite:
@@ -16,7 +16,11 @@ inputs:
     required: false
     default: "default"
   auto-baseline:
-    description: "Auto-accept baselines (skip diff)"
+    description: "Set baselines from captured screenshots (no diff)"
+    required: false
+    default: "false"
+  auto-approve:
+    description: "Run diff and automatically approve all changes and set baselines"
     required: false
     default: "false"
   threshold:
@@ -25,6 +29,10 @@ inputs:
   filter:
     description: "Glob pattern to filter stories"
     required: false
+  only-changed:
+    description: "Only capture stories affected by code changes (change detection)"
+    required: false
+    default: "false"
   api-url:
     description: "pxdiff API URL"
     required: false
@@ -32,7 +40,7 @@ inputs:
   cli-version:
     description: "CLI version range to install (default set at publish time)"
     required: false
-    default: "~0.0.16"
+    default: "~0.0.17"
 
 outputs:
   diff-url:
@@ -59,9 +67,14 @@ runs:
   steps:
     - name: Install pxdiff CLI
       shell: bash
-      run: npm install -g @pxdiff/cli@${{ inputs.cli-version }}
+      run: |
+        if npx --no -- pxdiff --version &>/dev/null; then
+          echo "pxdiff already available, skipping install"
+        else
+          npm install -g @pxdiff/cli@${{ inputs.cli-version }}
+        fi
 
-    - name: Run pxdiff storybook
+    - name: Run npx pxdiff storybook
       id: capture
       shell: bash
       env:
@@ -70,20 +83,24 @@ runs:
       run: |
         set -euo pipefail
 
-        STORYBOOK_ARGS="${{ inputs.source }} --suite ${{ inputs.suite }} --output json"
+        STORYBOOK_ARGS="${{ inputs.build-dir }} --suite ${{ inputs.suite }} --output json"
 
         if [ "${{ inputs.auto-baseline }}" = "true" ]; then
-          STORYBOOK_ARGS="$STORYBOOK_ARGS --auto-approve"
+          STORYBOOK_ARGS="$STORYBOOK_ARGS --auto-baseline"
         fi
 
         if [ -n "${{ inputs.filter }}" ]; then
           STORYBOOK_ARGS="$STORYBOOK_ARGS --filter ${{ inputs.filter }}"
         fi
 
-        CAPTURE_JSON=$(pxdiff storybook $STORYBOOK_ARGS)
+        if [ "${{ inputs.only-changed }}" = "true" ]; then
+          STORYBOOK_ARGS="$STORYBOOK_ARGS --only-changed"
+        fi
+
+        CAPTURE_JSON=$(npx pxdiff storybook $STORYBOOK_ARGS)
         echo "capture-json=$CAPTURE_JSON" >> "$GITHUB_OUTPUT"
 
-    - name: Run pxdiff diff
+    - name: Run npx pxdiff diff
       id: result
       shell: bash
       if: inputs.auto-baseline != 'true'
@@ -97,14 +114,32 @@ runs:
         CAPTURE_ID=$(echo "$CAPTURE_JSON" | jq -r '.captureId')
         echo "capture-id=$CAPTURE_ID" >> "$GITHUB_OUTPUT"
 
-        DIFF_ARGS="--suite ${{ inputs.suite }} --head-capture $CAPTURE_ID --output json"
+        # If captureId is null, all stories were unchanged (change detection skipped everything)
+        if [ "$CAPTURE_ID" = "null" ]; then
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "changed=0" >> "$GITHUB_OUTPUT"
+          echo "new=0" >> "$GITHUB_OUTPUT"
+          echo "::notice::All stories unchanged — change detection skipped capture"
+          exit 0
+        fi
+
+        DIFF_ARGS="--suite ${{ inputs.suite }} --head-capture $CAPTURE_ID --output json --status"
+
+        if [ "${{ inputs.auto-approve }}" = "true" ]; then
+          DIFF_ARGS="$DIFF_ARGS --auto-approve"
+        fi
 
         if [ -n "${{ inputs.threshold }}" ]; then
           DIFF_ARGS="$DIFF_ARGS --threshold ${{ inputs.threshold }}"
         fi
 
-        DIFF_EXIT=0
-        DIFF_JSON=$(pxdiff diff $DIFF_ARGS) || DIFF_EXIT=$?
+        # Pass manifest from change detection to diff for carry-forward
+        MANIFEST=$(echo "$CAPTURE_JSON" | jq -r '.manifest // empty | join(",")')
+        if [ -n "$MANIFEST" ]; then
+          DIFF_ARGS="$DIFF_ARGS --manifest $MANIFEST"
+        fi
+
+        DIFF_JSON=$(npx pxdiff diff $DIFF_ARGS)
 
         DIFF_ID=$(echo "$DIFF_JSON" | jq -r '.diffId')
         CHANGED=$(echo "$DIFF_JSON" | jq -r '.summary.changed')
@@ -115,14 +150,7 @@ runs:
         echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
         echo "new=$NEW" >> "$GITHUB_OUTPUT"
         echo "diff-url=$REVIEW_URL" >> "$GITHUB_OUTPUT"
-
-        if [ "$DIFF_EXIT" -eq 1 ]; then
-          echo "status=failed" >> "$GITHUB_OUTPUT"
-          echo "::error::Visual changes detected: $CHANGED changed, $NEW new. Review at $REVIEW_URL"
-          exit 1
-        else
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-        fi
+        echo "status=passed" >> "$GITHUB_OUTPUT"
 
     - name: Set outputs for auto-baseline
       id: baseline-result

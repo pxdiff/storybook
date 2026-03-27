@@ -10,7 +10,7 @@ Uploads a Storybook build, discovers stories, captures screenshots, and diffs th
 - uses: pxdiff/storybook@v0
   with:
     api-key: ${{ secrets.PXDIFF_API_KEY }}
-    source: storybook-static
+    build-dir: storybook-static
 ```
 
 ## Inputs
@@ -18,7 +18,7 @@ Uploads a Storybook build, discovers stories, captures screenshots, and diffs th
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `api-key` | Yes | | pxdiff API key |
-| `source` | Yes | | Path to Storybook build directory |
+| `build-dir` | Yes | | Path to Storybook build directory |
 | `suite` | No | `default` | Suite name for grouping |
 | `auto-baseline` | No | `false` | Auto-accept baselines (skip diff) |
 | `threshold` | No | | Diff threshold (0.0–1.0) |
