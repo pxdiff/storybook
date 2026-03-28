@@ -37,7 +37,7 @@ jobs:
         with:
           repository: pxdiff/pxdiff
           ref: ${{ inputs.source-sha }}
-          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          token: ${{ secrets.SOURCE_READ_TOKEN }}
           sparse-checkout: storybook-action
           path: _source
 
